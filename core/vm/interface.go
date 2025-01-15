@@ -20,16 +20,48 @@ import (
 	"math/big"
 
 	"github.com/OffchainLabs/go-ethereum/common"
+	"github.com/OffchainLabs/go-ethereum/core/state"
+	"github.com/OffchainLabs/go-ethereum/core/tracing"
 	"github.com/OffchainLabs/go-ethereum/core/types"
+	"github.com/OffchainLabs/go-ethereum/ethdb"
+	"github.com/OffchainLabs/go-ethereum/params"
+	"github.com/holiman/uint256"
 )
 
 // StateDB is an EVM database for full state querying.
 type StateDB interface {
-	CreateAccount(common.Address)
+	// Arbitrum: manage Stylus wasms
+	ActivateWasm(moduleHash common.Hash, asmMap map[ethdb.WasmTarget][]byte)
+	TryGetActivatedAsm(target ethdb.WasmTarget, moduleHash common.Hash) (asm []byte, err error)
+	TryGetActivatedAsmMap(targets []ethdb.WasmTarget, moduleHash common.Hash) (asmMap map[ethdb.WasmTarget][]byte, err error)
+	RecordCacheWasm(wasm state.CacheWasm)
+	RecordEvictWasm(wasm state.EvictWasm)
+	GetRecentWasms() state.RecentWasms
 
-	SubBalance(common.Address, *big.Int)
-	AddBalance(common.Address, *big.Int)
-	GetBalance(common.Address) *big.Int
+	// Arbitrum: track stylus's memory footprint
+	GetStylusPages() (uint16, uint16)
+	GetStylusPagesOpen() uint16
+	SetStylusPagesOpen(open uint16)
+	AddStylusPages(new uint16) (uint16, uint16)
+	AddStylusPagesEver(new uint16)
+
+	// Arbitrum: preserve old empty account behavior
+	CreateZombieIfDeleted(common.Address)
+
+	// Arbitrum
+	FilterTx()
+	ClearTxFilter()
+	IsTxFiltered() bool
+
+	Deterministic() bool
+	Database() state.Database
+
+	CreateAccount(common.Address)
+	CreateContract(common.Address)
+
+	SubBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason)
+	AddBalance(common.Address, *uint256.Int, tracing.BalanceChangeReason)
+	GetBalance(common.Address) *uint256.Int
 	ExpectBalanceBurn(*big.Int)
 
 	GetNonce(common.Address) uint64
@@ -47,19 +79,24 @@ type StateDB interface {
 	GetCommittedState(common.Address, common.Hash) common.Hash
 	GetState(common.Address, common.Hash) common.Hash
 	SetState(common.Address, common.Hash, common.Hash)
+	GetStorageRoot(addr common.Address) common.Hash
 
-	Suicide(common.Address) bool
-	HasSuicided(common.Address) bool
-	GetSuicides() []common.Address
+	GetTransientState(addr common.Address, key common.Hash) common.Hash
+	SetTransientState(addr common.Address, key, value common.Hash)
+
+	SelfDestruct(common.Address)
+	HasSelfDestructed(common.Address) bool
+	GetSelfDestructs() []common.Address
+
+	Selfdestruct6780(common.Address)
 
 	// Exist reports whether the given account exists in state.
-	// Notably this should also return true for suicided accounts.
+	// Notably this should also return true for self-destructed accounts.
 	Exist(common.Address) bool
 	// Empty returns whether the given account is empty. Empty
 	// is defined according to EIP161 (balance = nonce = code = 0).
 	Empty(common.Address) bool
 
-	PrepareAccessList(sender common.Address, dest *common.Address, precompiles []common.Address, txAccesses types.AccessList)
 	AddressInAccessList(addr common.Address) bool
 	SlotInAccessList(addr common.Address, slot common.Hash) (addressOk bool, slotOk bool)
 	// AddAddressToAccessList adds the given address to the access list. This operation is safe to perform
@@ -68,26 +105,26 @@ type StateDB interface {
 	// AddSlotToAccessList adds the given (address,slot) to the access list. This operation is safe to perform
 	// even if the feature/fork is not active yet
 	AddSlotToAccessList(addr common.Address, slot common.Hash)
+	Prepare(rules params.Rules, sender, coinbase common.Address, dest *common.Address, precompiles []common.Address, txAccesses types.AccessList)
 
 	RevertToSnapshot(int)
 	Snapshot() int
 
 	AddLog(*types.Log)
 	AddPreimage(common.Hash, []byte)
-	GetCurrentTxLogs() []*types.Log
 
-	ForEachStorage(common.Address, func(common.Hash, common.Hash) bool) error
+	GetCurrentTxLogs() []*types.Log
 }
 
 // CallContext provides a basic interface for the EVM calling conventions. The EVM
 // depends on this context being implemented for doing subcalls and initialising new EVM contracts.
 type CallContext interface {
-	// Call another contract
+	// Call calls another contract.
 	Call(env *EVM, me ContractRef, addr common.Address, data []byte, gas, value *big.Int) ([]byte, error)
-	// Take another's contract code and execute within our own context
+	// CallCode takes another contracts code and execute within our own context
 	CallCode(env *EVM, me ContractRef, addr common.Address, data []byte, gas, value *big.Int) ([]byte, error)
-	// Same as CallCode except sender and value is propagated from parent to child scope
+	// DelegateCall is same as CallCode except sender and value is propagated from parent to child scope
 	DelegateCall(env *EVM, me ContractRef, addr common.Address, data []byte, gas *big.Int) ([]byte, error)
-	// Create a new contract
+	// Create creates a new contract
 	Create(env *EVM, me ContractRef, data []byte, gas, value *big.Int) ([]byte, common.Address, error)
 }

@@ -24,7 +24,6 @@ import (
 	"math/big"
 	"os"
 	goruntime "runtime"
-	"runtime/pprof"
 	"testing"
 	"time"
 
@@ -34,21 +33,24 @@ import (
 	"github.com/OffchainLabs/go-ethereum/core"
 	"github.com/OffchainLabs/go-ethereum/core/rawdb"
 	"github.com/OffchainLabs/go-ethereum/core/state"
+	"github.com/OffchainLabs/go-ethereum/core/tracing"
 	"github.com/OffchainLabs/go-ethereum/core/vm"
 	"github.com/OffchainLabs/go-ethereum/core/vm/runtime"
 	"github.com/OffchainLabs/go-ethereum/eth/tracers/logger"
 	"github.com/OffchainLabs/go-ethereum/internal/flags"
-	"github.com/OffchainLabs/go-ethereum/log"
 	"github.com/OffchainLabs/go-ethereum/params"
+	"github.com/OffchainLabs/go-ethereum/triedb"
+	"github.com/OffchainLabs/go-ethereum/triedb/hashdb"
 	"github.com/urfave/cli/v2"
 )
 
 var runCommand = &cli.Command{
 	Action:      runCmd,
 	Name:        "run",
-	Usage:       "run arbitrary evm binary",
+	Usage:       "Run arbitrary evm binary",
 	ArgsUsage:   "<code>",
 	Description: `The run command runs arbitrary EVM code.`,
+	Flags:       flags.Merge(vmFlags, traceFlags),
 }
 
 // readGenesis will read the given JSON format genesis file and return
@@ -106,9 +108,6 @@ func timedExec(bench bool, execFunc func() ([]byte, uint64, error)) (output []by
 }
 
 func runCmd(ctx *cli.Context) error {
-	glogger := log.NewGlogHandler(log.StreamHandler(os.Stderr, log.TerminalFormat(false)))
-	glogger.Verbosity(log.Lvl(ctx.Int(VerbosityFlag.Name)))
-	log.Root().SetHandler(glogger)
 	logconfig := &logger.Config{
 		EnableMemory:     !ctx.Bool(DisableMemoryFlag.Name),
 		DisableStack:     ctx.Bool(DisableStackFlag.Name),
@@ -118,33 +117,48 @@ func runCmd(ctx *cli.Context) error {
 	}
 
 	var (
-		tracer        vm.EVMLogger
-		debugLogger   *logger.StructLogger
-		statedb       *state.StateDB
-		chainConfig   *params.ChainConfig
-		sender        = common.BytesToAddress([]byte("sender"))
-		receiver      = common.BytesToAddress([]byte("receiver"))
-		genesisConfig *core.Genesis
+		tracer      *tracing.Hooks
+		debugLogger *logger.StructLogger
+		statedb     *state.StateDB
+		chainConfig *params.ChainConfig
+		sender      = common.BytesToAddress([]byte("sender"))
+		receiver    = common.BytesToAddress([]byte("receiver"))
+		preimages   = ctx.Bool(DumpFlag.Name)
+		blobHashes  []common.Hash  // TODO (MariusVanDerWijden) implement blob hashes in state tests
+		blobBaseFee = new(big.Int) // TODO (MariusVanDerWijden) implement blob fee in state tests
 	)
 	if ctx.Bool(MachineFlag.Name) {
 		tracer = logger.NewJSONLogger(logconfig, os.Stdout)
 	} else if ctx.Bool(DebugFlag.Name) {
 		debugLogger = logger.NewStructLogger(logconfig)
-		tracer = debugLogger
+		tracer = debugLogger.Hooks()
 	} else {
 		debugLogger = logger.NewStructLogger(logconfig)
 	}
+
+	initialGas := ctx.Uint64(GasFlag.Name)
+	genesisConfig := new(core.Genesis)
+	genesisConfig.GasLimit = initialGas
 	if ctx.String(GenesisFlag.Name) != "" {
-		gen := readGenesis(ctx.String(GenesisFlag.Name))
-		genesisConfig = gen
-		db := rawdb.NewMemoryDatabase()
-		genesis := gen.ToBlock(db)
-		statedb, _ = state.New(genesis.Root(), state.NewDatabase(db), nil)
-		chainConfig = gen.Config
+		genesisConfig = readGenesis(ctx.String(GenesisFlag.Name))
+		if genesisConfig.GasLimit != 0 {
+			initialGas = genesisConfig.GasLimit
+		}
 	} else {
-		statedb, _ = state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
-		genesisConfig = new(core.Genesis)
+		genesisConfig.Config = params.AllDevChainProtocolChanges
 	}
+
+	db := rawdb.NewMemoryDatabase()
+	triedb := triedb.NewDatabase(db, &triedb.Config{
+		Preimages: preimages,
+		HashDB:    hashdb.Defaults,
+	})
+	defer triedb.Close()
+	genesis := genesisConfig.MustCommit(db, triedb)
+	sdb := state.NewDatabaseWithNodeDB(db, triedb)
+	statedb, _ = state.New(genesis.Root(), sdb, nil)
+	chainConfig = genesisConfig.Config
+
 	if ctx.String(SenderFlag.Name) != "" {
 		sender = common.HexToAddress(ctx.String(SenderFlag.Name))
 	}
@@ -198,10 +212,6 @@ func runCmd(ctx *cli.Context) error {
 		}
 		code = common.Hex2Bytes(bin)
 	}
-	initialGas := ctx.Uint64(GasFlag.Name)
-	if genesisConfig.GasLimit != 0 {
-		initialGas = genesisConfig.GasLimit
-	}
 	runtimeConfig := runtime.Config{
 		Origin:      sender,
 		State:       statedb,
@@ -209,26 +219,14 @@ func runCmd(ctx *cli.Context) error {
 		GasPrice:    flags.GlobalBig(ctx, PriceFlag.Name),
 		Value:       flags.GlobalBig(ctx, ValueFlag.Name),
 		Difficulty:  genesisConfig.Difficulty,
-		Time:        new(big.Int).SetUint64(genesisConfig.Timestamp),
+		Time:        genesisConfig.Timestamp,
 		Coinbase:    genesisConfig.Coinbase,
 		BlockNumber: new(big.Int).SetUint64(genesisConfig.Number),
+		BlobHashes:  blobHashes,
+		BlobBaseFee: blobBaseFee,
 		EVMConfig: vm.Config{
 			Tracer: tracer,
-			Debug:  ctx.Bool(DebugFlag.Name) || ctx.Bool(MachineFlag.Name),
 		},
-	}
-
-	if cpuProfilePath := ctx.String(CPUProfileFlag.Name); cpuProfilePath != "" {
-		f, err := os.Create(cpuProfilePath)
-		if err != nil {
-			fmt.Println("could not create CPU profile: ", err)
-			os.Exit(1)
-		}
-		if err := pprof.StartCPUProfile(f); err != nil {
-			fmt.Println("could not start CPU profile: ", err)
-			os.Exit(1)
-		}
-		defer pprof.StopCPUProfile()
 	}
 
 	if chainConfig != nil {
@@ -274,22 +272,17 @@ func runCmd(ctx *cli.Context) error {
 	output, leftOverGas, stats, err := timedExec(bench, execFunc)
 
 	if ctx.Bool(DumpFlag.Name) {
-		statedb.Commit(true)
-		statedb.IntermediateRoot(true)
-		fmt.Println(string(statedb.Dump(nil)))
-	}
-
-	if memProfilePath := ctx.String(MemProfileFlag.Name); memProfilePath != "" {
-		f, err := os.Create(memProfilePath)
+		root, err := statedb.Commit(genesisConfig.Number, true)
 		if err != nil {
-			fmt.Println("could not create memory profile: ", err)
-			os.Exit(1)
+			fmt.Printf("Failed to commit changes %v\n", err)
+			return err
 		}
-		if err := pprof.WriteHeapProfile(f); err != nil {
-			fmt.Println("could not write memory profile: ", err)
-			os.Exit(1)
+		dumpdb, err := state.New(root, sdb, nil)
+		if err != nil {
+			fmt.Printf("Failed to open statedb %v\n", err)
+			return err
 		}
-		f.Close()
+		fmt.Println(string(dumpdb.Dump(nil)))
 	}
 
 	if ctx.Bool(DebugFlag.Name) {

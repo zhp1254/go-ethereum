@@ -3,13 +3,18 @@ package arbitrum
 import (
 	"context"
 
+	"github.com/OffchainLabs/go-ethereum/accounts"
+	"github.com/OffchainLabs/go-ethereum/arbitrum_types"
+	"github.com/OffchainLabs/go-ethereum/consensus"
 	"github.com/OffchainLabs/go-ethereum/core"
 	"github.com/OffchainLabs/go-ethereum/core/bloombits"
 	"github.com/OffchainLabs/go-ethereum/core/types"
+	"github.com/OffchainLabs/go-ethereum/eth/filters"
 	"github.com/OffchainLabs/go-ethereum/ethdb"
 	"github.com/OffchainLabs/go-ethereum/event"
 	"github.com/OffchainLabs/go-ethereum/internal/shutdowncheck"
 	"github.com/OffchainLabs/go-ethereum/node"
+	"github.com/OffchainLabs/go-ethereum/rpc"
 )
 
 type Backend struct {
@@ -30,9 +35,11 @@ type Backend struct {
 	chanTxs      chan *types.Transaction
 	chanClose    chan struct{} //close coroutine
 	chanNewBlock chan struct{} //create new L2 block unless empty
+
+	filterSystem *filters.FilterSystem
 }
 
-func NewBackend(stack *node.Node, config *Config, chainDb ethdb.Database, publisher ArbInterface, sync SyncProgressBackend) (*Backend, error) {
+func NewBackend(stack *node.Node, config *Config, chainDb ethdb.Database, publisher ArbInterface, filterConfig filters.Config) (*Backend, *filters.FilterSystem, error) {
 	backend := &Backend{
 		arb:     publisher,
 		stack:   stack,
@@ -49,42 +56,49 @@ func NewBackend(stack *node.Node, config *Config, chainDb ethdb.Database, publis
 		chanNewBlock: make(chan struct{}, 1),
 	}
 
-	backend.bloomIndexer.Start(backend.arb.BlockChain())
-	err := createRegisterAPIBackend(backend, sync, config.ClassicRedirect, config.ClassicRedirectTimeout)
-	if err != nil {
-		return nil, err
+	if len(config.AllowMethod) > 0 {
+		rpcFilter := make(map[string]bool)
+		for _, method := range config.AllowMethod {
+			rpcFilter[method] = true
+		}
+		backend.stack.ApplyAPIFilter(rpcFilter)
 	}
-	backend.shutdownTracker.MarkStartup()
-	return backend, nil
+
+	backend.bloomIndexer.Start(backend.arb.BlockChain())
+	filterSystem, err := createRegisterAPIBackend(backend, filterConfig, config.ClassicRedirect, config.ClassicRedirectTimeout)
+	if err != nil {
+		return nil, nil, err
+	}
+	backend.filterSystem = filterSystem
+	return backend, filterSystem, nil
 }
 
-func (b *Backend) APIBackend() *APIBackend {
-	return b.apiBackend
+func (b *Backend) AccountManager() *accounts.Manager { return b.stack.AccountManager() }
+func (b *Backend) APIBackend() *APIBackend           { return b.apiBackend }
+func (b *Backend) APIs() []rpc.API                   { return b.apiBackend.GetAPIs(b.filterSystem) }
+func (b *Backend) ArbInterface() ArbInterface        { return b.arb }
+func (b *Backend) BlockChain() *core.BlockChain      { return b.arb.BlockChain() }
+func (b *Backend) BloomIndexer() *core.ChainIndexer  { return b.bloomIndexer }
+func (b *Backend) ChainDb() ethdb.Database           { return b.chainDb }
+func (b *Backend) Engine() consensus.Engine          { return b.arb.BlockChain().Engine() }
+func (b *Backend) Stack() *node.Node                 { return b.stack }
+
+func (b *Backend) ResetWithGenesisBlock(gb *types.Block) {
+	b.arb.BlockChain().ResetWithGenesisBlock(gb)
 }
 
-func (b *Backend) ChainDb() ethdb.Database {
-	return b.chainDb
-}
-
-func (b *Backend) EnqueueL2Message(ctx context.Context, tx *types.Transaction) error {
-	return b.arb.PublishTransaction(ctx, tx)
+func (b *Backend) EnqueueL2Message(ctx context.Context, tx *types.Transaction, options *arbitrum_types.ConditionalOptions) error {
+	return b.arb.PublishTransaction(ctx, tx, options)
 }
 
 func (b *Backend) SubscribeNewTxsEvent(ch chan<- core.NewTxsEvent) event.Subscription {
 	return b.scope.Track(b.txFeed.Subscribe(ch))
 }
 
-func (b *Backend) Stack() *node.Node {
-	return b.stack
-}
-
-func (b *Backend) ArbInterface() ArbInterface {
-	return b.arb
-}
-
 // TODO: this is used when registering backend as lifecycle in stack
 func (b *Backend) Start() error {
 	b.startBloomHandlers(b.config.BloomBitsBlocks)
+	b.shutdownTracker.MarkStartup()
 	b.shutdownTracker.Start()
 
 	return nil

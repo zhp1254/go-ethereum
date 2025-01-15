@@ -535,7 +535,7 @@ func (net *Network) GetRandomUpNode(excludeIDs ...enode.ID) *Node {
 	return net.getRandomUpNode(excludeIDs...)
 }
 
-// GetRandomUpNode returns a random node on the network, which is running.
+// getRandomUpNode returns a random node on the network, which is running.
 func (net *Network) getRandomUpNode(excludeIDs ...enode.ID) *Node {
 	return net.getRandomNode(net.getUpNodeIDs(), excludeIDs)
 }
@@ -646,8 +646,8 @@ func (net *Network) getConn(oneID, otherID enode.ID) *Conn {
 	return net.Conns[i]
 }
 
-// InitConn(one, other) retrieves the connection model for the connection between
-// peers one and other, or creates a new one if it does not exist
+// InitConn retrieves the connection model for the connection between
+// peers 'oneID' and 'otherID', or creates a new one if it does not exist
 // the order of nodes does not matter, i.e., Conn(i,j) == Conn(j, i)
 // it checks if the connection is already up, and if the nodes are running
 // NOTE:
@@ -1028,11 +1028,14 @@ func (net *Network) Load(snap *Snapshot) error {
 		}
 	}
 
+	timeout := time.NewTimer(snapshotLoadTimeout)
+	defer timeout.Stop()
+
 	select {
 	// Wait until all connections from the snapshot are established.
 	case <-allConnected:
 	// Make sure that we do not wait forever.
-	case <-time.After(snapshotLoadTimeout):
+	case <-timeout.C:
 		return errors.New("snapshot connections not established")
 	}
 	return nil

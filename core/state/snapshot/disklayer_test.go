@@ -139,7 +139,7 @@ func TestDiskMerge(t *testing.T) {
 	// Retrieve all the data through the disk layer and validate it
 	base = snaps.Snapshot(diffRoot)
 	if _, ok := base.(*diskLayer); !ok {
-		t.Fatalf("update not flattend into the disk layer")
+		t.Fatalf("update not flattened into the disk layer")
 	}
 
 	// assertAccount ensures that an account matches the given blob.
@@ -183,7 +183,7 @@ func TestDiskMerge(t *testing.T) {
 	// assertDatabaseAccount ensures that an account from the database matches the given blob.
 	assertDatabaseAccount := func(account common.Hash, data []byte) {
 		t.Helper()
-		if blob := rawdb.ReadAccountSnapshot(db, account); !bytes.Equal(blob, data) {
+		if blob, _ := rawdb.ReadAccountSnapshot(db, account); !bytes.Equal(blob, data) {
 			t.Errorf("account database access (%x) mismatch: have %x, want %x", account, blob, data)
 		}
 	}
@@ -197,7 +197,7 @@ func TestDiskMerge(t *testing.T) {
 	// assertDatabaseStorage ensures that a storage slot from the database matches the given blob.
 	assertDatabaseStorage := func(account common.Hash, slot common.Hash, data []byte) {
 		t.Helper()
-		if blob := rawdb.ReadStorageSnapshot(db, account, slot); !bytes.Equal(blob, data) {
+		if blob, _ := rawdb.ReadStorageSnapshot(db, account, slot); !bytes.Equal(blob, data) {
 			t.Errorf("storage database access (%x:%x) mismatch: have %x, want %x", account, slot, blob, data)
 		}
 	}
@@ -362,7 +362,7 @@ func TestDiskPartialMerge(t *testing.T) {
 		// Retrieve all the data through the disk layer and validate it
 		base = snaps.Snapshot(diffRoot)
 		if _, ok := base.(*diskLayer); !ok {
-			t.Fatalf("test %d: update not flattend into the disk layer", i)
+			t.Fatalf("test %d: update not flattened into the disk layer", i)
 		}
 		assertAccount(accNoModNoCache, accNoModNoCache[:])
 		assertAccount(accNoModCache, accNoModCache[:])
@@ -387,7 +387,7 @@ func TestDiskPartialMerge(t *testing.T) {
 		// exist otherwise.
 		assertDatabaseAccount := func(account common.Hash, data []byte) {
 			t.Helper()
-			blob := rawdb.ReadAccountSnapshot(db, account)
+			blob, _ := rawdb.ReadAccountSnapshot(db, account)
 			if bytes.Compare(account[:], genMarker) > 0 && blob != nil {
 				t.Fatalf("test %d: post-marker (%x) account database access (%x) succeeded: %x", i, genMarker, account, blob)
 			}
@@ -407,7 +407,7 @@ func TestDiskPartialMerge(t *testing.T) {
 		// and does not exist otherwise.
 		assertDatabaseStorage := func(account common.Hash, slot common.Hash, data []byte) {
 			t.Helper()
-			blob := rawdb.ReadStorageSnapshot(db, account, slot)
+			blob, _ := rawdb.ReadStorageSnapshot(db, account, slot)
 			if bytes.Compare(append(account[:], slot[:]...), genMarker) > 0 && blob != nil {
 				t.Fatalf("test %d: post-marker (%x) storage database access (%x:%x) succeeded: %x", i, genMarker, account, slot, blob)
 			}

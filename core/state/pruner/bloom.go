@@ -17,27 +17,24 @@
 package pruner
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 
 	"github.com/OffchainLabs/go-ethereum/common"
 	"github.com/OffchainLabs/go-ethereum/core/rawdb"
 	"github.com/OffchainLabs/go-ethereum/log"
+	"github.com/OffchainLabs/go-ethereum/rlp"
 	bloomfilter "github.com/holiman/bloomfilter/v2"
 )
 
-// stateBloomHasher is a wrapper around a byte blob to satisfy the interface API
-// requirements of the bloom library used. It's used to convert a trie hash or
-// contract code hash into a 64 bit mini hash.
-type stateBloomHasher []byte
-
-func (f stateBloomHasher) Write(p []byte) (n int, err error) { panic("not implemented") }
-func (f stateBloomHasher) Sum(b []byte) []byte               { panic("not implemented") }
-func (f stateBloomHasher) Reset()                            { panic("not implemented") }
-func (f stateBloomHasher) BlockSize() int                    { panic("not implemented") }
-func (f stateBloomHasher) Size() int                         { return 8 }
-func (f stateBloomHasher) Sum64() uint64                     { return binary.BigEndian.Uint64(f) }
+// stateBloomHash is used to convert a trie hash or contract code hash into a 64 bit mini hash.
+func stateBloomHash(f []byte) uint64 {
+	return binary.BigEndian.Uint64(f)
+}
 
 // stateBloom is a bloom filter used during the state conversion(snapshot->state).
 // The keys of all generated entries will be recorded here so that in the pruning
@@ -73,27 +70,54 @@ func newStateBloomWithSize(size uint64) (*stateBloom, error) {
 
 // NewStateBloomFromDisk loads the state bloom from the given file.
 // In this case the assumption is held the bloom filter is complete.
-func NewStateBloomFromDisk(filename string) (*stateBloom, error) {
-	bloom, _, err := bloomfilter.ReadFile(filename)
+func NewStateBloomFromDisk(filename string) (*stateBloom, []common.Hash, error) {
+	f, err := os.Open(filename)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &stateBloom{bloom: bloom}, nil
+	defer f.Close()
+	r := bufio.NewReader(f)
+	version := []byte{0}
+	_, err = io.ReadFull(r, version)
+	if err != nil {
+		return nil, nil, err
+	}
+	if version[0] != 0 {
+		return nil, nil, fmt.Errorf("unknown state bloom filter version %v", version[0])
+	}
+	var roots []common.Hash
+	err = rlp.Decode(r, &roots)
+	if err != nil {
+		return nil, nil, err
+	}
+	bloom, _, err := bloomfilter.ReadFrom(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &stateBloom{bloom: bloom}, roots, nil
 }
 
 // Commit flushes the bloom filter content into the disk and marks the bloom
 // as complete.
-func (bloom *stateBloom) Commit(filename, tempname string) error {
+func (bloom *stateBloom) Commit(filename, tempname string, roots []common.Hash) error {
+	f, err := os.OpenFile(tempname, os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write([]byte{0}) // version
+	if err != nil {
+		return err
+	}
+	err = rlp.Encode(f, roots)
+	if err != nil {
+		return err
+	}
 	// Write the bloom out into a temporary file
-	_, err := bloom.bloom.WriteFile(tempname)
+	_, err = bloom.bloom.WriteTo(f)
 	if err != nil {
 		return err
 	}
 	// Ensure the file is synced to disk
-	f, err := os.OpenFile(tempname, os.O_RDWR, 0666)
-	if err != nil {
-		return err
-	}
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return err
@@ -113,10 +137,10 @@ func (bloom *stateBloom) Put(key []byte, value []byte) error {
 		if !isCode {
 			return errors.New("invalid entry")
 		}
-		bloom.bloom.Add(stateBloomHasher(codeKey))
+		bloom.bloom.AddHash(stateBloomHash(codeKey))
 		return nil
 	}
-	bloom.bloom.Add(stateBloomHasher(key))
+	bloom.bloom.AddHash(stateBloomHash(key))
 	return nil
 }
 
@@ -127,6 +151,14 @@ func (bloom *stateBloom) Delete(key []byte) error { panic("not supported") }
 // reports whether the key is contained.
 // - If it says yes, the key may be contained
 // - If it says no, the key is definitely not contained.
-func (bloom *stateBloom) Contain(key []byte) (bool, error) {
-	return bloom.bloom.Contains(stateBloomHasher(key)), nil
+func (bloom *stateBloom) Contain(key []byte) bool {
+	return bloom.bloom.ContainsHash(stateBloomHash(key))
+}
+
+func (bloom *stateBloom) FalsePosititveProbability() float64 {
+	return bloom.bloom.FalsePosititveProbability()
+}
+
+func (bloom *stateBloom) Size() uint64 {
+	return bloom.bloom.M()
 }

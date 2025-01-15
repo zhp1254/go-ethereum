@@ -19,30 +19,16 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/OffchainLabs/go-ethereum/internal/debug"
 	"github.com/OffchainLabs/go-ethereum/internal/flags"
 	"github.com/OffchainLabs/go-ethereum/p2p/enode"
-	"github.com/OffchainLabs/go-ethereum/params"
 	"github.com/urfave/cli/v2"
 )
 
-var (
-	// Git information set by linker when building with ci.go.
-	gitCommit string
-	gitDate   string
-	app       = &cli.App{
-		Name:        filepath.Base(os.Args[0]),
-		Usage:       "go-ethereum devp2p tool",
-		Version:     params.VersionWithCommit(gitCommit, gitDate),
-		Writer:      os.Stdout,
-		HideVersion: true,
-	}
-)
+var app = flags.NewApp("go-ethereum devp2p tool")
 
 func init() {
-	// Set up the CLI app.
 	app.Flags = append(app.Flags, debug.Flags...)
 	app.Before = func(ctx *cli.Context) error {
 		flags.MigrateGlobalFlags(ctx)
@@ -56,6 +42,7 @@ func init() {
 		fmt.Fprintf(os.Stderr, "No such command: %s\n", cmd)
 		os.Exit(1)
 	}
+
 	// Add subcommands.
 	app.Commands = []*cli.Command{
 		enrdumpCommand,
@@ -79,9 +66,15 @@ func commandHasFlag(ctx *cli.Context, flag cli.Flag) bool {
 	for _, name := range names {
 		set[name] = struct{}{}
 	}
-	for _, fn := range ctx.FlagNames() {
-		if _, ok := set[fn]; ok {
-			return true
+	for _, ctx := range ctx.Lineage() {
+		if ctx.Command != nil {
+			for _, f := range ctx.Command.Flags {
+				for _, name := range f.Names() {
+					if _, ok := set[name]; ok {
+						return true
+					}
+				}
+			}
 		}
 	}
 	return false

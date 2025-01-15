@@ -21,11 +21,10 @@ import (
 
 	"github.com/dop251/goja"
 	"github.com/OffchainLabs/go-ethereum/common"
-	"github.com/OffchainLabs/go-ethereum/core/vm"
 )
 
 func (jst *jsTracer) CaptureArbitrumTransfer(
-	env *vm.EVM, from, to *common.Address, value *big.Int, before bool, purpose string,
+	from, to *common.Address, value *big.Int, before bool, purpose string,
 ) {
 	traceTransfer, ok := goja.AssertFunction(jst.obj.Get("captureArbitrumTransfer"))
 	if !ok {
@@ -53,5 +52,20 @@ func (jst *jsTracer) CaptureArbitrumTransfer(
 	}
 }
 
-func (*jsTracer) CaptureArbitrumStorageGet(key common.Hash, depth int, before bool)        {}
-func (*jsTracer) CaptureArbitrumStorageSet(key, value common.Hash, depth int, before bool) {}
+func (jst *jsTracer) CaptureStylusHostio(name string, args, outs []byte, startInk, endInk uint64) {
+	hostio, ok := goja.AssertFunction(jst.obj.Get("hostio"))
+	if !ok {
+		return
+	}
+
+	info := jst.vm.NewObject()
+	info.Set("name", name)
+	info.Set("args", args)
+	info.Set("outs", outs)
+	info.Set("startInk", startInk)
+	info.Set("endInk", endInk)
+
+	if _, err := hostio(jst.obj, info); err != nil {
+		jst.err = wrapError("hostio", err)
+	}
+}

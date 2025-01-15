@@ -14,21 +14,29 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-//go:build js
-// +build js
+//go:build wasm
+// +build wasm
 
 package rawdb
 
-type Releaser interface {
-	Release() error
+type FileLock interface {
+	Unlock() error
+	TryLock() (bool, error)
+	TryRLock() (bool, error)
 }
 
-func Flock(fileName string) (r Releaser, existed bool, err error) {
-	return mockReleaser{}, false, nil
+func NewFileLock(_ string) FileLock {
+	return mockFileLock{}
 }
 
-type mockReleaser struct{}
+type mockFileLock struct{}
 
-func (r mockReleaser) Release() error {
+func (r mockFileLock) Unlock() error {
 	return nil
+}
+func (r mockFileLock) TryLock() (bool, error) {
+	return true, nil
+}
+func (r mockFileLock) TryRLock() (bool, error) {
+	return true, nil
 }

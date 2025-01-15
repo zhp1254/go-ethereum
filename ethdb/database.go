@@ -79,16 +79,17 @@ type AncientReaderOp interface {
 
 	// AncientRange retrieves multiple items in sequence, starting from the index 'start'.
 	// It will return
-	//  - at most 'count' items,
-	//  - at least 1 item (even if exceeding the maxBytes), but will otherwise
-	//   return as many items as fit into maxBytes.
+	//   - at most 'count' items,
+	//   - if maxBytes is specified: at least 1 item (even if exceeding the maxByteSize),
+	//     but will otherwise return as many items as fit into maxByteSize.
+	//   - if maxBytes is not specified, 'count' items will be returned if they are present
 	AncientRange(kind string, start, count, maxBytes uint64) ([][]byte, error)
 
 	// Ancients returns the ancient item numbers in the ancient store.
 	Ancients() (uint64, error)
 
-	// Tail returns the number of first stored item in the freezer.
-	// This number can also be interpreted as the total deleted item numbers.
+	// Tail returns the number of first stored item in the ancient store.
+	// This number can also be interpreted as the total deleted items.
 	Tail() (uint64, error)
 
 	// AncientSize returns the ancient size of the specified category.
@@ -100,7 +101,7 @@ type AncientReader interface {
 	AncientReaderOp
 
 	// ReadAncients runs the given read operation while ensuring that no writes take place
-	// on the underlying freezer.
+	// on the underlying ancient store.
 	ReadAncients(fn func(AncientReaderOp) error) (err error)
 }
 
@@ -113,14 +114,14 @@ type AncientWriter interface {
 
 	// TruncateHead discards all but the first n ancient data from the ancient store.
 	// After the truncation, the latest item can be accessed it item_n-1(start from 0).
-	TruncateHead(n uint64) error
+	TruncateHead(n uint64) (uint64, error)
 
 	// TruncateTail discards the first n ancient data from the ancient store. The already
 	// deleted items are ignored. After the truncation, the earliest item can be accessed
 	// is item_n(start from 0). The deleted items may not be removed from the ancient store
 	// immediately, but only when the accumulated deleted data reach the threshold then
 	// will be removed all together.
-	TruncateTail(n uint64) error
+	TruncateTail(n uint64) (uint64, error)
 
 	// Sync flushes all in-memory ancient store data to disk.
 	Sync() error
@@ -140,9 +141,15 @@ type AncientWriteOp interface {
 	AppendRaw(kind string, number uint64, item []byte) error
 }
 
-// AncientStater wraps the Stat method of a backing data store.
+// AncientStater wraps the Stat method of a backing ancient store.
 type AncientStater interface {
-	// AncientDatadir returns the root directory path of the ancient store.
+	// AncientDatadir returns the path of the ancient store directory.
+	//
+	// If the ancient store is not activated, an error is returned.
+	// If an ephemeral ancient store is used, an empty path is returned.
+	//
+	// The path returned by AncientDatadir can be used as the root path
+	// of the ancient store to construct paths for other sub ancient stores.
 	AncientDatadir() (string, error)
 }
 
@@ -168,16 +175,29 @@ type Stater interface {
 }
 
 // AncientStore contains all the methods required to allow handling different
-// ancient data stores backing immutable chain data store.
+// ancient data stores backing immutable data store.
 type AncientStore interface {
 	AncientReader
 	AncientWriter
-	AncientStater
 	io.Closer
 }
 
+type WasmTarget string
+type WasmDataBaseRetriever interface {
+	WasmDataBase() (KeyValueStore, uint32)
+	WasmTargets() []WasmTarget
+}
+
+// ResettableAncientStore extends the AncientStore interface by adding a Reset method.
+type ResettableAncientStore interface {
+	AncientStore
+
+	// Reset is designed to reset the entire ancient store to its default state.
+	Reset() error
+}
+
 // Database contains all the methods required by the high level database to not
-// only access the key-value data store but also the chain freezer.
+// only access the key-value data store but also the ancient chain store.
 type Database interface {
 	Reader
 	Writer
@@ -187,4 +207,5 @@ type Database interface {
 	Compacter
 	Snapshotter
 	io.Closer
+	WasmDataBaseRetriever
 }

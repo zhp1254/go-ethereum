@@ -1,10 +1,13 @@
 package eth
 
 import (
+	"context"
+
 	"github.com/OffchainLabs/go-ethereum/core"
 	"github.com/OffchainLabs/go-ethereum/core/state"
 	"github.com/OffchainLabs/go-ethereum/core/types"
 	"github.com/OffchainLabs/go-ethereum/core/vm"
+	"github.com/OffchainLabs/go-ethereum/eth/tracers"
 	"github.com/OffchainLabs/go-ethereum/ethdb"
 )
 
@@ -18,6 +21,6 @@ func NewArbEthereum(
 	}
 }
 
-func (eth *Ethereum) StateAtTransaction(block *types.Block, txIndex int, reexec uint64) (core.Message, vm.BlockContext, *state.StateDB, error) {
-	return eth.stateAtTransaction(block, txIndex, reexec)
+func (eth *Ethereum) StateAtTransaction(ctx context.Context, block *types.Block, txIndex int, reexec uint64) (*types.Transaction, vm.BlockContext, *state.StateDB, tracers.StateReleaseFunc, error) {
+	return eth.stateAtTransaction(ctx, block, txIndex, reexec)
 }

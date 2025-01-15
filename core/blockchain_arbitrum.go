@@ -18,10 +18,12 @@
 package core
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/OffchainLabs/go-ethereum/core/state"
 	"github.com/OffchainLabs/go-ethereum/core/types"
+	"github.com/OffchainLabs/go-ethereum/log"
 	"github.com/OffchainLabs/go-ethereum/rpc"
 )
 
@@ -38,23 +40,14 @@ func (bc *BlockChain) WriteBlockAndSetHeadWithTime(block *types.Block, receipts 
 func (bc *BlockChain) ReorgToOldBlock(newHead *types.Block) error {
 	bc.wg.Add(1)
 	defer bc.wg.Done()
-	bc.chainmu.MustLock()
-	defer bc.chainmu.Unlock()
-	oldHead := bc.CurrentBlock()
-	if oldHead.Hash() == newHead.Hash() {
-		return nil
+	if _, err := bc.SetCanonical(newHead); err != nil {
+		return fmt.Errorf("error reorging to old block: %w", err)
 	}
-	bc.writeHeadBlock(newHead)
-	err := bc.reorg(oldHead, newHead)
-	if err != nil {
-		return err
-	}
-	bc.chainHeadFeed.Send(ChainHeadEvent{Block: newHead})
 	return nil
 }
 
 func (bc *BlockChain) ClipToPostNitroGenesis(blockNum rpc.BlockNumber) (rpc.BlockNumber, rpc.BlockNumber) {
-	currentBlock := rpc.BlockNumber(bc.CurrentBlock().NumberU64())
+	currentBlock := rpc.BlockNumber(bc.CurrentBlock().Number.Uint64())
 	nitroGenesis := rpc.BlockNumber(bc.Config().ArbitrumChainParams.GenesisBlockNum)
 	if blockNum == rpc.LatestBlockNumber || blockNum == rpc.PendingBlockNumber {
 		blockNum = currentBlock
@@ -66,4 +59,13 @@ func (bc *BlockChain) ClipToPostNitroGenesis(blockNum rpc.BlockNumber) (rpc.Bloc
 		blockNum = nitroGenesis
 	}
 	return blockNum, currentBlock
+}
+
+func (bc *BlockChain) RecoverState(block *types.Block) error {
+	if bc.HasState(block.Root()) {
+		return nil
+	}
+	log.Warn("recovering block state", "num", block.Number(), "hash", block.Hash(), "root", block.Root())
+	_, err := bc.recoverAncestors(block)
+	return err
 }
